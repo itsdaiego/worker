@@ -12,11 +12,6 @@ type Job struct {
 	Status  string `json:"status"`
 }
 
-type CreateJobRequest struct {
-	Type    string `json:"type"`
-	Payload string `json:"payload"`
-}
-
 func (job *Job) BeforeCreate(tx *gorm.DB) error {
 	job.ID = uuid.New().String()
 	return nil
