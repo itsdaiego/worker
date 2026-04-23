@@ -34,5 +34,17 @@ func initDB() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to run migrations: %v", err)
 	}
 
-	return gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %v", err)
+	}
+
+	sqlDb, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sql.DB from gorm.DB: %v", err)
+	}
+
+	sqlDb.SetMaxOpenConns(25)
+
+	return db, nil
 }

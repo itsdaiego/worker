@@ -41,7 +41,11 @@ func main() {
 
 		jobRepo := NewJobRepository(s.db)
 
-		jobs, err := jobRepo.GetAllJobs()
+		queryOpts := QueryOptions{
+			BatchSize: 10000,
+		}
+
+		jobs, err := jobRepo.GetAllJobs(queryOpts)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch jobs"})
 			return
@@ -94,6 +98,26 @@ func main() {
 
 		c.JSON(http.StatusOK, createdJob)
 	})
+
+	s.router.POST("/jobs/batch", func(c *gin.Context) {
+		batchSize := 10000
+
+		worker := NewWorker(NewJobRepository(s.db))
+
+		result, err := worker.ProcessBatch(batchSize, nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process batch"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Batch processing completed",
+			"succeeded":  result.Succeeded,
+			"failed":     result.Failed,
+		})
+	})
+
+
 
 	if err := s.router.Run(":8080"); err != nil {
 		log.Fatal(err)
