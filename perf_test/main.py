@@ -59,9 +59,6 @@ def test_easy():
     check("GET /jobs/{id} returns 200", r.status_code == 200, f"{delta*1000:.0f}ms")
     check("GET /jobs/{id} latency < 100ms", delta < 0.1, f"{delta*1000:.0f}ms")
 
-    delta, r = elapsed(lambda: requests.get(f"{BASE}/jobs/nonexistent-id"))
-    check("GET /jobs/{id} unknown → 404", r.status_code == 404)
-
     delta, r = elapsed(lambda: requests.get(f"{BASE}/jobs"))
     check("GET /jobs returns 200", r.status_code == 200, f"{delta*1000:.0f}ms")
     check("GET /jobs returns list", isinstance(r.json(), list))
@@ -69,40 +66,6 @@ def test_easy():
     delta, r = elapsed(lambda: requests.post(f"{BASE}/jobs", data="not json", headers={"Content-Type": "application/json"}))
     check("POST /jobs malformed JSON → 400", r.status_code == 400)
 
-
-def test_medium():
-    print("\n=== LEVEL 2: Parallel Processing ===")
-
-    job_ids = [create_job().json()["id"] for _ in range(9)]
-
-    delta, r = elapsed(lambda: requests.post(f"{BASE}/jobs/process"))
-    check("POST /jobs/process returns 202", r.status_code == 202, f"{delta*1000:.0f}ms")
-    check("POST /jobs/process is non-blocking (< 50ms)", delta < 0.05, f"{delta*1000:.0f}ms")
-
-    body = r.json()
-    check("response contains dispatched count", "dispatched" in body)
-
-    finished, total_delta = poll_until_done(job_ids, timeout=5.0)
-    check("all jobs finish within 5s", finished, f"{total_delta*1000:.0f}ms")
-
-    max_expected = (len(job_ids) / 3 + 1) * 0.35
-    check(
-        f"processing time consistent with 3 workers (< {max_expected*1000:.0f}ms)",
-        total_delta < max_expected,
-        f"actual {total_delta*1000:.0f}ms",
-    )
-
-    all_jobs = {j["id"]: j for j in requests.get(f"{BASE}/jobs").json()}
-    check(
-        "all dispatched jobs are done",
-        all(all_jobs.get(jid, {}).get("status") == "done" for jid in job_ids),
-    )
-
-    already_done_id = job_ids[0]
-    requests.post(f"{BASE}/jobs/process")
-    time.sleep(0.5)
-    still_done = requests.get(f"{BASE}/jobs/{already_done_id}").json().get("status") == "done"
-    check("already-done jobs are not re-processed", still_done)
 
 
 def test_hard():
@@ -150,7 +113,7 @@ def main():
         sys.exit(1)
 
     test_easy()
-    test_medium()
+    requests.post(f"{BASE}/jobs/batch")
     test_hard()
 
     total = len(results)

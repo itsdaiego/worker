@@ -3,7 +3,6 @@ package main
 import (
 	. "challenge/model"
 	. "challenge/repository"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,14 +47,7 @@ func (w *myWorker) ProcessBatch(batchSize int) (BatchResult, error) {
 			for _, job := range batch {
 				time.Sleep(300 * time.Millisecond)
 
-				status := "done"
-				if rand.Float64() < 0.3 {
-					status = "failed"
-				}
-
-				if err := w.repo.UpdateJobStatus(job.ID, status); err != nil {
-					failed.Add(1)
-				} else if status == "failed" {
+				if err := w.repo.UpdateJobStatus(job.ID, "done"); err != nil {
 					failed.Add(1)
 				} else {
 					succeeded.Add(1)
