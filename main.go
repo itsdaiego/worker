@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -37,41 +37,32 @@ func main() {
 	}
 
 	s.router.GET("/jobs", func(c *gin.Context) {
-		var jobs []Job
-
 		jobRepo := NewJobRepository(s.db)
 
-		queryOpts := QueryOptions{
-			BatchSize: 10000,
-		}
-
-		jobs, err := jobRepo.GetAllJobs(queryOpts)
+		jobs, err := jobRepo.GetAllJobs(QueryOptions{})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch jobs"})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"jobs": jobs})
+		c.JSON(http.StatusOK, jobs)
 	})
 
 	s.router.GET("/jobs/:id", func(c *gin.Context) {
 		id := c.Param("id")
-
 		jobRepo := NewJobRepository(s.db)
 
-		intId, err := strconv.Atoi(id)
+		job, err := jobRepo.GetJobById(id)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job ID"})
-			return
-		}
-
-		job, err := jobRepo.GetJobById(intId)
-		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch job"})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"job": job})
+		c.JSON(http.StatusOK, job)
 	})
 
 	s.router.POST("/jobs", func(c *gin.Context) {
@@ -88,6 +79,20 @@ func main() {
 			return
 		}
 
+		validTypes := map[string]bool{"send_email": true, "resize_image": true, "generate_report": true}
+		if !validTypes[jobRequest.Type] {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Invalid job type"})
+			return
+		}
+		if len(jobRequest.Payload) == 0 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Payload cannot be empty"})
+			return
+		}
+		if len(jobRequest.Payload) > 500 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Payload exceeds 500 characters"})
+			return
+		}
+
 		jobRepo := NewJobRepository(s.db)
 
 		createdJob, err := jobRepo.CreateJob(jobRequest)
@@ -96,28 +101,24 @@ func main() {
 			return
 		}
 
-		c.JSON(http.StatusOK, createdJob)
+		c.JSON(http.StatusCreated, createdJob)
 	})
 
 	s.router.POST("/jobs/batch", func(c *gin.Context) {
-		batchSize := 10000
-
 		worker := NewWorker(NewJobRepository(s.db))
 
-		result, err := worker.ProcessBatch(batchSize, nil)
+		result, err := worker.ProcessBatch(10000)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process batch"})
 			return
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"message": "Batch processing completed",
-			"succeeded":  result.Succeeded,
-			"failed":     result.Failed,
+			"total":     result.Total,
+			"succeeded": result.Succeeded,
+			"failed":    result.Failed,
 		})
 	})
-
-
 
 	if err := s.router.Run(":8080"); err != nil {
 		log.Fatal(err)

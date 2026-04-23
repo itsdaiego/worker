@@ -9,7 +9,7 @@ import (
 
 type JobRepository interface {
 	GetAllJobs(queryOpts QueryOptions) ([]Job, error)
-	GetJobById(id int) (Job, error)
+	GetJobById(id string) (Job, error)
 	CreateJob(jobRequest CreateJobRequest) (Job, error)
 	UpdateJobStatus(id string, status string) error
 }
@@ -26,7 +26,7 @@ func NewJobRepository(db *gorm.DB) JobRepository {
 	return &jobRepository{db: db}
 }
 
-func (r *jobRepository,) GetAllJobs(queryOpts QueryOptions) ([]Job, error) {
+func (r *jobRepository) GetAllJobs(queryOpts QueryOptions) ([]Job, error) {
 	var jobs []Job
 
 
@@ -39,10 +39,10 @@ func (r *jobRepository,) GetAllJobs(queryOpts QueryOptions) ([]Job, error) {
 	return jobs, result.Error
 }
 
-func (r *jobRepository) GetJobById(id int) (Job, error) {
+func (r *jobRepository) GetJobById(id string) (Job, error) {
 	var job Job
 
-	result := r.db.First(&job, id)
+	result := r.db.Where("id = ?", id).First(&job)
 	return job, result.Error
 }
 

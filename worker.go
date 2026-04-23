@@ -3,78 +3,71 @@ package main
 import (
 	. "challenge/model"
 	. "challenge/repository"
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-
 type Worker interface {
-	ProcessBatch(batchSize int, jobChan chan Job) (JobSummaryResults, error)
+	ProcessBatch(batchSize int) (BatchResult, error)
 }
 
 type myWorker struct {
 	repo JobRepository
 }
 
-
 func NewWorker(repo JobRepository) Worker {
-	return &myWorker{repo:repo}
+	return &myWorker{repo: repo}
 }
 
-func (w *myWorker) ProcessBatch(batchSize int, jobChan chan Job) (JobSummaryResults, error) {
+func (w *myWorker) ProcessBatch(batchSize int) (BatchResult, error) {
 	queryOpts := QueryOptions{BatchSize: batchSize}
 	jobs, err := w.repo.GetAllJobs(queryOpts)
 	if err != nil {
-		return JobSummaryResults{}, err
+		return BatchResult{}, err
 	}
 
-	maxWorkers := 10
+	if len(jobs) == 0 {
+		return BatchResult{}, nil
+	}
 
-	jobsChunkSize :=  (len(jobs) + maxWorkers - 1) / maxWorkers
+	maxWorkers := 3
+	jobsChunkSize := (len(jobs) + maxWorkers - 1) / maxWorkers
 
 	var wg sync.WaitGroup
 	var succeeded, failed atomic.Int32
 
 	for i := 0; i < len(jobs); i += jobsChunkSize {
-		jobsBatch := jobs[i:i+jobsChunkSize]
+		end := min(i+jobsChunkSize, len(jobs))
+		batch := jobs[i:end]
 
 		wg.Add(1)
-		go func(jobsBatch []Job) {
+		go func(batch []Job) {
 			defer wg.Done()
-			for _, job := range jobsBatch {
-				randChange := rand.Float64()
-				if randChange > 0.7 {
-					succeeded.Add(1)
-					job.Status = "succeeded"
-				} else {
-					failed.Add(1)
-					job.Status = "failed"
+			for _, job := range batch {
+				time.Sleep(300 * time.Millisecond)
+
+				status := "done"
+				if rand.Float64() < 0.3 {
+					status = "failed"
 				}
 
-				time.Sleep(300)
-
-				if err != nil {
+				if err := w.repo.UpdateJobStatus(job.ID, status); err != nil {
 					failed.Add(1)
-					continue
-				}
-
-				if err := w.repo.UpdateJobStatus(job.ID, job.Status); err != nil {
+				} else if status == "failed" {
 					failed.Add(1)
 				} else {
 					succeeded.Add(1)
 				}
 			}
-		}(jobsBatch)
+		}(batch)
 	}
 	wg.Wait()
 
-	fmt.Printf("Batch processing completed. Succeeded: %d, Failed: %d\n", succeeded.Load(), failed.Load())
-
-	return JobSummaryResults{
-		Succeeded: succeeded.Load(),
-		Failed:    failed.Load(),
+	return BatchResult{
+		Total:     int(succeeded.Load() + failed.Load()),
+		Succeeded: int(succeeded.Load()),
+		Failed:    int(failed.Load()),
 	}, nil
 }

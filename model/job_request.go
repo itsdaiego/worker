@@ -6,7 +6,8 @@ type CreateJobRequest struct {
 }
 
 
-type JobSummaryResults struct {
-	Succeeded int32
-	Failed    int32
+type BatchResult struct {
+	Total     int
+	Succeeded int
+	Failed    int
 }
