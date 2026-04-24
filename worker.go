@@ -47,6 +47,8 @@ func (w *myWorker) ProcessBatch(batchSize int) (BatchResult, error) {
 		go func(batch []Job) {
 			defer wg.Done()
 			for _, job := range batch {
+				// fake processing time for each job
+				// the goal for the project is to implement parallel processing only
 				time.Sleep(300 * time.Millisecond)
 				jobChan <- job
 			}
