@@ -11,7 +11,7 @@ type JobRepository interface {
 	GetAllJobs(queryOpts QueryOptions) ([]Job, error)
 	GetJobById(id string) (Job, error)
 	CreateJob(jobRequest CreateJobRequest) (Job, error)
-	UpdateJobStatus(id string, status string) error
+	BulkUpdateJobStatus(ids []string, status string) error
 }
 
 type QueryOptions struct {
@@ -58,7 +58,7 @@ func (r *jobRepository) CreateJob(jobRequest CreateJobRequest) (Job, error) {
 	return job, result.Error
 }
 
-func (r *jobRepository) UpdateJobStatus(id string, status string) error {
-	result := r.db.Model(&Job{}).Where("id = ?", id).Update("status", status)
+func (r *jobRepository) BulkUpdateJobStatus(ids []string, status string) error {
+	result := r.db.Model(&Job{}).Where("id IN ?", ids).Update("status", status)
 	return result.Error
 }
