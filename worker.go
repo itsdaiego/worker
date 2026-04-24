@@ -33,7 +33,7 @@ func (w *myWorker) ProcessBatch(batchSize int) (BatchResult, error) {
 
 	jobChan := make(chan Job, len(jobs))
 
-	maxWorkers := 1000
+	maxWorkers := 10000
 	jobsChunkSize := (len(jobs) + maxWorkers - 1) / maxWorkers
 
 	var wg sync.WaitGroup

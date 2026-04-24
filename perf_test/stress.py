@@ -7,12 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 BASE = "http://localhost:8080"
 
 JOB_TYPES = ["send_email", "resize_image", "generate_report"]
-TARGET_JOBS = 1_000
-CREATE_CONCURRENCY = 50
-
-created = 0
-create_errors = 0
-lock = threading.Lock()
+TARGET_JOBS = 10_000
+CREATE_CONCURRENCY = 100
 
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
@@ -27,23 +23,9 @@ def check(label: str, passed: bool, detail: str = "") -> bool:
 
 
 def create_single_job(i: int):
-    global created, create_errors
     job_type = JOB_TYPES[i % 3]
-    try:
-        r = requests.post(
-            f"{BASE}/jobs",
-            json={"type": job_type, "payload": f"stress_{i}"},
-            timeout=10,
-        )
-        if r.status_code == 201:
-            with lock:
-                created += 1
-        else:
-            with lock:
-                create_errors += 1
-    except Exception:
-        with lock:
-            create_errors += 1
+    r = requests.post(f"{BASE}/jobs", json={"type": job_type, "payload": f"stress_{i}"}, timeout=10)
+    return r.status_code == 201
 
 
 def get_job_stats() -> dict:
@@ -62,9 +44,7 @@ def get_job_stats() -> dict:
 def monitor(stop_event: threading.Event):
     while not stop_event.is_set():
         stats = get_job_stats()
-        if "error" in stats:
-            print(f"\r  \033[90m[monitor] error: {stats['error']}\033[0m", end="", flush=True)
-        else:
+        if "error" not in stats:
             bar_width = 40
             total = stats["total"] or 1
             done_bars = int((stats["done"] / total) * bar_width)
@@ -100,23 +80,28 @@ def main():
     print(f"  STRESS TEST — {TARGET_JOBS:,} jobs")
     print(f"{'='*60}")
 
-    print(f"\n=== Phase 1: Bulk Creation ({TARGET_JOBS:,} jobs, {CREATE_CONCURRENCY} threads) ===")
+    # ── Phase 1: Create jobs ──
+    print(f"\n=== Phase 1: Creating {TARGET_JOBS:,} jobs ===")
     t0 = time.perf_counter()
+    created = 0
 
     with ThreadPoolExecutor(max_workers=CREATE_CONCURRENCY) as pool:
         futures = [pool.submit(create_single_job, i) for i in range(TARGET_JOBS)]
         for f in as_completed(futures):
-            f.result()
+            if f.result():
+                created += 1
 
     t_create = time.perf_counter() - t0
-    create_rate = created / t_create if t_create > 0 else 0
+    print(f"  Created {created:,} jobs in {t_create:.2f}s")
 
-    print(f"  Created {created:,} jobs in {t_create:.2f}s ({create_rate:.0f}/sec)")
-    check("all jobs created successfully", create_errors == 0, f"{create_errors} errors")
-    check("creation throughput > 100/sec", create_rate > 100, f"{create_rate:.0f}/sec")
-    check("creation throughput > 500/sec", create_rate > 500, f"{create_rate:.0f}/sec")
-
-    print(f"\n=== Phase 2: Batch Processing ===")
+    # ── Phase 2: Batch Processing ──
+    # Each job does time.Sleep(300ms). With N workers processing
+    # 10,000 jobs, theoretical min = (10000/N) * 0.3s
+    # 3 workers:   ~1000s
+    # 100 workers:  ~30s
+    # 1000 workers:  ~3s
+    # 10000 workers: ~0.3s (all parallel)
+    print(f"\n=== Phase 2: Batch Processing ({created:,} jobs, 300ms/job) ===")
     stop_monitor = threading.Event()
     mon = threading.Thread(target=monitor, args=(stop_monitor,), daemon=True)
     mon.start()
@@ -144,20 +129,65 @@ def main():
     print(f"  Succeeded: {batch_succeeded:,} | Failed: {batch_failed:,}")
 
     check("batch returns 200", r is not None and r.status_code == 200)
-    check("batch processed all pending jobs", batch_total == created, f"expected {created}, got {batch_total}")
+    check("batch processed all jobs", batch_total == created, f"expected {created}, got {batch_total}")
     check("zero failures", batch_failed == 0, f"{batch_failed} failed")
-    check("batch completes in < 120s", t_batch < 120, f"{t_batch:.2f}s")
-    check("batch completes in < 30s", t_batch < 30, f"{t_batch:.2f}s")
-    check("batch completes in < 10s", t_batch < 10, f"{t_batch:.2f}s")
-    check("batch throughput > 50/sec", batch_rate > 50, f"{batch_rate:.0f}/sec")
-    check("batch throughput > 200/sec", batch_rate > 200, f"{batch_rate:.0f}/sec")
-    check("batch throughput > 1000/sec", batch_rate > 1000, f"{batch_rate:.0f}/sec")
 
-    print(f"\n=== Phase 3: Post-batch Verification ===")
+    # time thresholds (tests parallelism quality)
+    check("batch < 60s  (need ~167 workers)", t_batch < 60, f"{t_batch:.2f}s")
+    check("batch < 30s  (need ~333 workers)", t_batch < 30, f"{t_batch:.2f}s")
+    check("batch < 10s  (need ~1000 workers)", t_batch < 10, f"{t_batch:.2f}s")
+    check("batch < 5s   (need ~2000 workers)", t_batch < 5, f"{t_batch:.2f}s")
+    check("batch < 1s   (need ~10000 workers)", t_batch < 1, f"{t_batch:.2f}s")
+
+    # throughput thresholds
+    check("throughput > 500/sec", batch_rate > 500, f"{batch_rate:.0f}/sec")
+    check("throughput > 2000/sec", batch_rate > 2000, f"{batch_rate:.0f}/sec")
+    check("throughput > 5000/sec", batch_rate > 5000, f"{batch_rate:.0f}/sec")
+    check("throughput > 10000/sec", batch_rate > 10000, f"{batch_rate:.0f}/sec")
+
+    # ── Phase 3: Data Integrity ──
+    print(f"\n=== Phase 3: Data Integrity ===")
     stats = get_job_stats()
     check("no pending jobs remain", stats.get("pending", -1) == 0, f"{stats.get('pending', '?')} pending")
     check("all jobs marked done", stats.get("done", 0) == created, f"{stats.get('done', 0)}/{created}")
 
+    all_jobs = requests.get(f"{BASE}/jobs", timeout=30).json()
+    ids = [j["id"] for j in all_jobs]
+    check("no duplicate IDs", len(ids) == len(set(ids)), f"{len(ids)} total, {len(set(ids))} unique")
+    statuses = set(j["status"] for j in all_jobs)
+    check("no corrupted statuses", statuses.issubset({"pending", "done", "failed"}), f"found: {statuses}")
+
+    # ── Phase 4: Concurrent Batch Race ──
+    print(f"\n=== Phase 4: Concurrent Batch Race (500 jobs, 3 batchers) ===")
+    for i in range(500):
+        requests.post(f"{BASE}/jobs", json={"type": "send_email", "payload": f"race_{i}"}, timeout=10)
+
+    batch_results = []
+    race_lock = threading.Lock()
+
+    def fire_batch():
+        try:
+            r = requests.post(f"{BASE}/jobs/batch", timeout=120)
+            with race_lock:
+                batch_results.append(r.json())
+        except Exception as e:
+            with race_lock:
+                batch_results.append({"error": str(e)})
+
+    threads = [threading.Thread(target=fire_batch) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    total_processed = sum(b.get("total", 0) for b in batch_results)
+    print(f"  Batch results: {[b.get('total', 0) for b in batch_results]}")
+    check("no double-processing", total_processed <= 500, f"processed {total_processed} from 500 jobs")
+
+    race_stats = get_job_stats()
+    check("no pending after race", race_stats.get("pending", -1) == 0, f"{race_stats.get('pending', '?')} pending")
+
+    # ── Summary ──
     total = len(results)
     passed = sum(1 for _, ok, _ in results if ok)
     failed = total - passed

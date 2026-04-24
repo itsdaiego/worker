@@ -4,6 +4,7 @@ import (
 	. "challenge/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 
@@ -31,8 +32,23 @@ func (r *jobRepository) GetAllJobs(queryOpts QueryOptions) ([]Job, error) {
 
 
 	if queryOpts.BatchSize > 0 {
-		result := r.db.Where("status = ?", "pending").Limit(queryOpts.BatchSize).Find(&jobs)
-		return jobs, result.Error
+		err := r.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+				Where("status = ?", "pending").
+				Limit(queryOpts.BatchSize).
+				Find(&jobs).Error; err != nil {
+				return err
+			}
+			if len(jobs) == 0 {
+				return nil
+			}
+			ids := make([]string, len(jobs))
+			for i, j := range jobs {
+				ids[i] = j.ID
+			}
+			return tx.Model(&Job{}).Where("id IN ?", ids).Update("status", "in_progress").Error
+		})
+		return jobs, err
 	}
 
 	result := r.db.Find(&jobs)
