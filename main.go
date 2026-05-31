@@ -1,21 +1,34 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
+	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 
 	. "challenge/model"
 	. "challenge/repository"
 )
 
+const (
+	createQueueSize = 1000
+	createWorkers   = 16
+)
+
 type Server struct {
-	db     *gorm.DB
+	db     *sqlx.DB
 	router *gin.Engine
+	pool   *CreatePool
 }
 
 func NewServer() (*Server, error) {
@@ -27,6 +40,7 @@ func NewServer() (*Server, error) {
 	return &Server{
 		db:     db,
 		router: gin.Default(),
+		pool:   NewCreatePool(NewJobRepository(db), createQueueSize, createWorkers),
 	}, nil
 }
 
@@ -54,7 +68,7 @@ func main() {
 
 		job, err := jobRepo.GetJobById(id)
 		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
+			if errors.Is(err, sql.ErrNoRows) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 				return
 			}
@@ -93,15 +107,19 @@ func main() {
 			return
 		}
 
-		jobRepo := NewJobRepository(s.db)
+		job := Job{
+			ID:      uuid.New().String(),
+			Type:    jobRequest.Type,
+			Payload: jobRequest.Payload,
+			Status:  "pending",
+		}
 
-		createdJob, err := jobRepo.CreateJob(jobRequest)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job"})
+		if !s.pool.Enqueue(job) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Queue full"})
 			return
 		}
 
-		c.JSON(http.StatusCreated, createdJob)
+		c.JSON(http.StatusAccepted, gin.H{"id": job.ID})
 	})
 
 	s.router.POST("/jobs/batch", func(c *gin.Context) {
@@ -120,7 +138,29 @@ func main() {
 		})
 	})
 
-	if err := s.router.Run(":8080"); err != nil {
-		log.Fatal(err)
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: s.router,
 	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+
+	log.Println("shutting down")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+
+	s.pool.Shutdown()
+	log.Println("done")
 }

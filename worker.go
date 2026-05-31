@@ -3,6 +3,7 @@ package main
 import (
 	. "challenge/model"
 	. "challenge/repository"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,12 +59,12 @@ func (w *myWorker) ProcessBatch(batchSize int) (BatchResult, error) {
 	close(jobChan)
 
 	jobIds := make([]string, 0, len(jobChan))
-	
+
 	for job := range jobChan {
 		jobIds = append(jobIds, job.ID)
 	}
 
-	for i :=0; i < len(jobIds); i += 1000 {
+	for i := 0; i < len(jobIds); i += 1000 {
 		end := min(i+1000, len(jobIds))
 		err := w.repo.BulkUpdateJobStatus(jobIds[i:end], "done")
 		if err != nil {
@@ -72,11 +73,51 @@ func (w *myWorker) ProcessBatch(batchSize int) (BatchResult, error) {
 			succeeded.Add(int32(end - i))
 		}
 	}
-		
 
 	return BatchResult{
 		Total:     int(succeeded.Load() + failed.Load()),
 		Succeeded: int(succeeded.Load()),
 		Failed:    int(failed.Load()),
 	}, nil
+}
+
+type CreatePool struct {
+	repo  JobRepository
+	queue chan Job
+	wg    sync.WaitGroup
+}
+
+func NewCreatePool(repo JobRepository, queueSize, workers int) *CreatePool {
+	p := &CreatePool{
+		repo:  repo,
+		queue: make(chan Job, queueSize),
+	}
+	for i := 0; i < workers; i++ {
+		p.wg.Add(1)
+		go p.run()
+	}
+	return p
+}
+
+func (p *CreatePool) run() {
+	defer p.wg.Done()
+	for job := range p.queue {
+		if err := p.repo.CreateJob(job); err != nil {
+			log.Printf("create job %s failed: %v", job.ID, err)
+		}
+	}
+}
+
+func (p *CreatePool) Enqueue(job Job) bool {
+	select {
+	case p.queue <- job:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *CreatePool) Shutdown() {
+	close(p.queue)
+	p.wg.Wait()
 }

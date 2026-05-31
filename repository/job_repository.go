@@ -1,17 +1,17 @@
 package repository
 
 import (
+	"context"
+	"database/sql"
 	. "challenge/model"
 
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
+	"github.com/jmoiron/sqlx"
 )
-
 
 type JobRepository interface {
 	GetAllJobs(queryOpts QueryOptions) ([]Job, error)
 	GetJobById(id string) (Job, error)
-	CreateJob(jobRequest CreateJobRequest) (Job, error)
+	CreateJob(job Job) error
 	BulkUpdateJobStatus(ids []string, status string) error
 }
 
@@ -20,61 +20,94 @@ type QueryOptions struct {
 }
 
 type jobRepository struct {
-	db *gorm.DB
+	db *sqlx.DB
 }
 
-func NewJobRepository(db *gorm.DB) JobRepository {
+func NewJobRepository(db *sqlx.DB) JobRepository {
 	return &jobRepository{db: db}
 }
 
 func (r *jobRepository) GetAllJobs(queryOpts QueryOptions) ([]Job, error) {
 	var jobs []Job
 
-
 	if queryOpts.BatchSize > 0 {
-		err := r.db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-				Where("status = ?", "pending").
-				Limit(queryOpts.BatchSize).
-				Find(&jobs).Error; err != nil {
-				return err
+		tx, err := r.db.BeginTxx(context.Background(), &sql.TxOptions{})
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+
+		if err := tx.Select(&jobs, `
+			SELECT id, type, payload, status
+			FROM jobs
+			WHERE status = $1
+			FOR UPDATE SKIP LOCKED
+			LIMIT $2
+		`, "pending", queryOpts.BatchSize); err != nil {
+			return nil, err
+		}
+		if len(jobs) == 0 {
+			if err := tx.Commit(); err != nil {
+				return nil, err
 			}
-			if len(jobs) == 0 {
-				return nil
-			}
-			ids := make([]string, len(jobs))
-			for i, j := range jobs {
-				ids[i] = j.ID
-			}
-			return tx.Model(&Job{}).Where("id IN ?", ids).Update("status", "in_progress").Error
-		})
-		return jobs, err
+			return jobs, nil
+		}
+
+		ids := make([]string, len(jobs))
+		for i, j := range jobs {
+			ids[i] = j.ID
+		}
+
+		query, args, err := sqlx.In("UPDATE jobs SET status = ? WHERE id IN (?)", "in_progress", ids)
+		if err != nil {
+			return nil, err
+		}
+		query = tx.Rebind(query)
+
+		if _, err := tx.Exec(query, args...); err != nil {
+			return nil, err
+		}
+
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+
+		return jobs, nil
 	}
 
-	result := r.db.Find(&jobs)
-	return jobs, result.Error
+	err := r.db.Select(&jobs, "SELECT id, type, payload, status FROM jobs")
+	return jobs, err
 }
 
 func (r *jobRepository) GetJobById(id string) (Job, error) {
 	var job Job
 
-	result := r.db.Where("id = ?", id).First(&job)
-	return job, result.Error
+	err := r.db.Get(&job, "SELECT id, type, payload, status FROM jobs WHERE id = $1", id)
+	return job, err
 }
 
-func (r *jobRepository) CreateJob(jobRequest CreateJobRequest) (Job, error) {
-	job := Job{
-		Type:       jobRequest.Type,
-		Payload:    jobRequest.Payload,
-		Status:     "pending",
-	}
-
-	result := r.db.Create(&job)
-
-	return job, result.Error
+func (r *jobRepository) CreateJob(job Job) error {
+	job.EnsureID()
+	_, err := r.db.Exec(
+		"INSERT INTO jobs (id, type, payload, status) VALUES ($1, $2, $3, $4)",
+		job.ID,
+		job.Type,
+		job.Payload,
+		job.Status,
+	)
+	return err
 }
 
 func (r *jobRepository) BulkUpdateJobStatus(ids []string, status string) error {
-	result := r.db.Model(&Job{}).Where("id IN ?", ids).Update("status", status)
-	return result.Error
+	if len(ids) == 0 {
+		return nil
+	}
+
+	query, args, err := sqlx.In("UPDATE jobs SET status = ? WHERE id IN (?)", status, ids)
+	if err != nil {
+		return err
+	}
+	query = r.db.Rebind(query)
+	_, err = r.db.Exec(query, args...)
+	return err
 }
